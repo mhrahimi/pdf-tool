@@ -278,6 +278,6 @@ with sync_playwright() as p:
     print('\n'.join(errs[:30]))
     b.close()
 
-from e2e_helpers import RESULTS
-print(summary())
-sys.exit(1 if any(not r[1] for r in RESULTS) else 0)
+msg, fails = summary()
+print(msg)
+sys.exit(1 if fails else 0)

@@ -6,26 +6,73 @@ const sigBytes = url => { if (!sigBytesCache.has(url)) sigBytesCache.set(url, da
 
 defineTool({
   id: 'sign', name: 'Sign', icon: 'sign', group: 'edit', verb: 'sign', runLabel: 'Sign & save', runIcon: 'sign',
-  desc: 'Draw, type or upload your signature and place it anywhere — add the date and initials too.',
-  defaults: { dateFmt: 'locale' },
+  desc: 'Draw, type or upload a visible signature — optionally seal the PDF with a .p12 certificate (PKCS#7).',
+  defaults: { dateFmt: 'locale', digital: false, reason: 'I approve this document', location: '', contact: '' },
   outName: f => baseName(f.name) + '-signed.pdf',
   mount(ctx) {
     const f = ctx.file, P = ctx.prefs;
     const props = h('div');
+    let p12Bytes = null, p12Name = '';
     const ed = objectEditor(ctx, f, { onSelect: it => showProps(it), onChange: validate });
     ctx.work.append(ed.st.el);
     const sigGrid = h('div', { class: 'sigs', role: 'list', 'aria-label': 'Saved signatures' });
     const createBtn = btn('Create signature', newSig, { ic: 'plus', cls: 'sm primary' });
     const dateSel = h('select', { class: 'inp', 'aria-label': 'Date format', onchange: () => { P.dateFmt = dateSel.value; ctx.save(); } },
       [['locale', new Date().toLocaleDateString()], ['iso', isoDate()], ['long', new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })]].map(([v, l]) => h('option', { value: v, selected: P.dateFmt === v }, l)));
+    const certLbl = h('span', { class: 'help', text: 'No certificate loaded' });
+    const certPass = h('input', { class: 'inp', type: 'password', autocomplete: 'off', placeholder: 'Certificate password', 'aria-label': 'Certificate password' });
+    const reasonInp = h('input', { class: 'inp', value: P.reason || '', 'aria-label': 'Reason', oninput: () => { P.reason = reasonInp.value; ctx.save(); } });
+    const locInp = h('input', { class: 'inp', value: P.location || '', 'aria-label': 'Location', oninput: () => { P.location = locInp.value; ctx.save(); } });
+    const contactInp = h('input', { class: 'inp', value: P.contact || '', 'aria-label': 'Contact', oninput: () => { P.contact = contactInp.value; ctx.save(); } });
+    const digiWrap = h('div');
+    const sigFieldsBox = h('div');
     ctx.side.append(
       h('h4', { text: 'Your signatures' }), sigGrid, h('div', { class: 'row', style: 'margin-bottom:18px' }, createBtn),
       h('h4', { text: 'Also add' }),
       h('div', { class: 'row', style: 'margin-bottom:8px' }, btn('Date', addDate, { cls: 'sm', ic: 'calendar' }), btn('Text', addText, { cls: 'sm', ic: 'text' }), btn('Initials', newSig, { cls: 'sm', ic: 'pen', title: 'Create initials the same way as a signature' })),
       field('Date format', dateSel),
+      h('div', { class: 'hr' }),
+      h('h4', { text: 'AcroForm signature fields' }), sigFieldsBox,
+      h('h4', { text: 'Digital signature (PKCS#7)' }),
+      checkbox('Also embed a certificate signature', P.digital, v => { P.digital = v; digiWrap.hidden = !v; ctx.save(); validate(); }, 'Imports a .p12 / .pfx and seals the PDF. Self-signed certs show as untrusted in Adobe until you trust them.'),
+      digiWrap,
       h('div', { class: 'hr' }), props,
-      h('p', { class: 'note', text: 'This adds a visible signature image. It isn’t a certificate-based digital signature — if your recipient requires one, use their e-signature service.' }));
+      h('p', { class: 'note', text: 'Visible stamps always stay on-device. Certificate private keys never leave this browser tab.' }));
+    digiWrap.append(
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, btn('Load .p12 / .pfx', loadP12, { cls: 'sm', ic: 'lock' }), certLbl),
+      field('Certificate password', certPass),
+      field('Reason', reasonInp),
+      field('Location', locInp),
+      field('Contact info', contactInp));
+    digiWrap.hidden = !P.digital;
 
+    (async () => {
+      try {
+        const doc = await libDoc(f);
+        const sigs = collectEntries(doc).filter(e => e.kind === 'signature');
+        if (!sigs.length) { sigFieldsBox.append(h('p', { class: 'help', style: 'color:var(--muted)', text: 'None in this PDF. Place a visible stamp anywhere, or enable digital signing to create a signature field.' })); return; }
+        sigFieldsBox.append(...sigs.map(e => {
+          const w = e.widgets[0];
+          return btn(`Place on “${e.label || e.name}”`, () => {
+            if (!loadSigs().length) return toast('Create a signature first.', 'error');
+            const s = loadSigs()[0];
+            const box = w.box;
+            ed.add({ type: 'image', label: 'Signature', url: s.url, bytes: sigBytes(s.url), w: box.w, h: box.h, u: box.u, v: box.v, page: w.page, sigField: e.name });
+            ed.st.show(w.page);
+          }, { cls: 'sm', style: 'margin-bottom:6px;width:100%' });
+        }));
+      } catch (e) { sigFieldsBox.append(h('p', { class: 'help', text: 'Couldn’t read signature fields.' })); }
+    })();
+
+    function loadP12() {
+      pickFiles('.p12,.pfx,application/x-pkcs12', false, async fl => {
+        const file = fl[0]; if (!file) return;
+        p12Bytes = new Uint8Array(await file.arrayBuffer());
+        p12Name = file.name;
+        certLbl.textContent = file.name;
+        validate();
+      });
+    }
     function isoDate() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
     function dateText() { return P.dateFmt === 'iso' ? isoDate() : P.dateFmt === 'long' ? new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : new Date().toLocaleDateString(); }
     function drawSigs() {
@@ -62,49 +109,119 @@ defineTool({
     }
     function validate() {
       const n = ed.items.length;
-      if (!n) return ctx.setRunnable(false, 'Place a signature on the page to continue.');
+      if (!n && !(P.digital && p12Bytes)) return ctx.setRunnable(false, 'Place a signature, or load a certificate for a digital-only seal.');
+      if (P.digital && !p12Bytes) return ctx.setRunnable(false, 'Load a .p12 / .pfx certificate to digitally sign.');
       const pages = new Set(ed.items.map(x => x.page)).size;
-      ctx.setRunnable(true); ctx.setStatus(`${plural(n, 'item')} on ${plural(pages, 'page')}`);
+      ctx.setRunnable(true); ctx.setStatus(P.digital ? `Visible + PKCS#7 · ${p12Name || 'cert'}` : `${plural(n, 'item')} on ${plural(pages || 1, 'page')}`);
     }
     drawSigs(); showProps(null); validate(); ed.st.show(0);
     ctx.onRun = async progress => {
+      progress(0.1, 'Applying visible signature…');
       const doc = await libDoc(f);
-      await ed.apply(doc, progress);
-      const o = await pdfOutput(doc, ctx.outName);
-      return { outputs: [o], summary: 'Signed', detail: `${o.name} · ${fmtBytes(o.data.length)}` };
+      await ed.apply(doc, f => progress(0.1 + 0.4 * f, 'Applying visible signature…'));
+      if (!P.digital || !p12Bytes) {
+        const o = await pdfOutput(doc, ctx.outName);
+        return { outputs: [o], summary: 'Signed', detail: `${o.name} · ${fmtBytes(o.data.length)}` };
+      }
+      if (!window.folioSign) throw new Error('Digital signing library failed to load.');
+      progress(0.55, 'Embedding signature field…');
+      const anchor = ed.items.find(x => x.type === 'image') || { page: 0, u: 72, v: 72, w: 180, h: 50 };
+      const page = doc.getPage(anchor.page || 0);
+      const g = pageGeom(page);
+      const [x1, y1] = g.toUser(anchor.u, anchor.v + anchor.h);
+      const [x2, y2] = g.toUser(anchor.u + anchor.w, anchor.v);
+      const widgetRect = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+      window.folioSign.pdflibAddPlaceholder({
+        pdfPage: page,
+        reason: P.reason || 'Signed',
+        contactInfo: P.contact || '',
+        name: 'The PDF Tool',
+        location: P.location || '',
+        signingTime: new Date(),
+        signatureLength: 8192,
+        widgetRect,
+        appName: 'The PDF Tool',
+      });
+      progress(0.7, 'Computing PKCS#7 signature…');
+      const pdfBytes = await doc.save({ useObjectStreams: false });
+      const signed = await window.folioSign.sign(pdfBytes, p12Bytes, certPass.value || '');
+      const data = signed instanceof Uint8Array ? signed : new Uint8Array(signed);
+      return { outputs: [{ name: safeName(ctx.outName, 'pdf'), data, pdf: true }], summary: 'Digitally signed', detail: `${safeName(ctx.outName, 'pdf')} · ${fmtBytes(data.length)} · PKCS#7` };
     };
   },
 });
 
 // ---------------------------------------------------------------------------
-// Edit: add text, whiteout, highlight, boxes, freehand ink and images.
+// Edit: add text, whiteout, highlight, boxes, freehand ink, images, redact,
+// and edit existing PDF text runs.
 // ---------------------------------------------------------------------------
 defineTool({
   id: 'edit', name: 'Edit', icon: 'edit', group: 'edit', verb: 'edit', runLabel: 'Save', runIcon: 'download',
-  desc: 'Add text, cover things up, highlight, draw and insert images on any page.',
-  defaults: { family: 'Helvetica', size: 14, bold: false, italic: false, color: '#111111', white: '#ffffff', hl: '#ffe14d', stroke: '#c8291c', sw: 2, ink: '#1f3fbf', inkW: 2.5 },
+  desc: 'Add text, redact, edit existing text, cover things up, highlight, draw and insert images.',
+  defaults: { family: 'Helvetica', size: 14, bold: false, italic: false, color: '#111111', white: '#ffffff', hl: '#ffe14d', stroke: '#c8291c', sw: 2, ink: '#1f3fbf', inkW: 2.5, redact: '#000000' },
   outName: f => baseName(f.name) + '-edited.pdf',
   mount(ctx) {
     const f = ctx.file, P = ctx.prefs;
     const props = h('div');
-    let mode = 'select';
+    let mode = 'select', textRuns = [], textLayer = h('div', { class: 'textedit-layer' });
     const ed = objectEditor(ctx, f, { onSelect: () => showProps(), onChange: validate });
+    ed.st.layer.after(textLayer);
+    // Keep text-run layer sized with the stage
+    const _show = ed.st.show.bind(ed.st);
+    ed.st.show = async i => { await _show(i); if (mode === 'textedit') await loadTextRuns(); };
     ctx.work.append(ed.st.el);
-    const MODES = [['select', 'Select', 'organize'], ['text', 'Text', 'text'], ['whiteout', 'Whiteout', 'whiteout'], ['highlight', 'Highlight', 'highlight'], ['box', 'Box', 'rect'], ['draw', 'Draw', 'draw'], ['image', 'Image', 'toimage']];
-    const grid = h('div', { class: 'toolgrid', role: 'toolbar', 'aria-label': 'Editing tools' });
+    const MODES = [['select', 'Select', 'organize'], ['text', 'Text', 'text'], ['textedit', 'Edit text', 'textedit'], ['redact', 'Redact', 'redact'], ['whiteout', 'Whiteout', 'whiteout'], ['highlight', 'Highlight', 'highlight'], ['box', 'Box', 'rect'], ['draw', 'Draw', 'draw'], ['image', 'Image', 'toimage']];
+    const grid = h('div', { class: 'toolgrid wide', role: 'toolbar', 'aria-label': 'Editing tools' });
     const setMode = m => {
       if (m === 'image') return addImage();
-      mode = m; ed.setMode(m); ed.setDrawStyle({ color: P.ink, width: P.inkW });
+      mode = m;
+      const drawMode = (m === 'redact') ? 'whiteout' : (m === 'textedit' ? 'select' : m);
+      ed.setMode(['whiteout', 'highlight', 'box', 'draw', 'text'].includes(drawMode) ? drawMode : 'select');
+      if (m === 'redact') ed.setMode('whiteout');
+      ed.setDrawStyle({ color: P.ink, width: P.inkW });
       for (const b of grid.children) b.setAttribute('aria-pressed', String(b.dataset.m === m));
+      textLayer.hidden = m !== 'textedit';
+      textLayer.replaceChildren();
+      if (m === 'textedit') loadTextRuns();
       showProps();
     };
     for (const [m, l, ic] of MODES) grid.append(h('button', { type: 'button', 'data-m': m, onclick: () => setMode(m) }, icon(ic), l));
     ed.onModeReset(() => setMode('select'));
     ed.makeText = (u, v) => { const it = { type: 'text', text: 'Text', u, v: v - P.size * 0.6, size: P.size, family: P.family, bold: P.bold, italic: P.italic, color: P.color }; fitText(it); return it; };
-    ed.makeRect = (kind, u, v, w, hh) => kind === 'whiteout' ? { type: 'rect', label: 'Whiteout', fill: P.white, fillOpacity: 1, u, v, w, h: hh }
-      : kind === 'highlight' ? { type: 'rect', label: 'Highlight', fill: P.hl, fillOpacity: 0.45, blend: true, u, v, w, h: hh }
-        : { type: 'rect', label: 'Box', stroke: P.stroke, sw: P.sw, u, v, w, h: hh };
-    ctx.side.append(grid, props, h('p', { class: 'note', text: 'To change existing text: cover it with Whiteout, then add Text on top. Double-click any text you added to retype it.' }));
+    ed.makeRect = (kind, u, v, w, hh) => {
+      if (mode === 'redact' || kind === 'redact') return { type: 'rect', label: 'Redact', fill: P.redact || '#000000', fillOpacity: 1, redact: true, u, v, w, h: hh };
+      return kind === 'whiteout' ? { type: 'rect', label: 'Whiteout', fill: P.white, fillOpacity: 1, u, v, w, h: hh }
+        : kind === 'highlight' ? { type: 'rect', label: 'Highlight', fill: P.hl, fillOpacity: 0.45, blend: true, u, v, w, h: hh }
+          : { type: 'rect', label: 'Box', stroke: P.stroke, sw: P.sw, u, v, w, h: hh };
+    };
+    const note = h('p', { class: 'note', text: 'Redact permanently removes content under black boxes when you save. Edit text replaces a selected run (covers the old glyphs and writes new text).' });
+    ctx.side.append(grid, props, note);
+
+    async function loadTextRuns() {
+      textLayer.replaceChildren(h('div', { class: 'help', style: 'padding:8px;color:var(--muted)', text: 'Reading text…' }));
+      try { textRuns = await pageTextRuns(f, ed.st.cur); }
+      catch (e) { textRuns = []; console.warn(e); }
+      const s = ed.st.scale;
+      textLayer.replaceChildren();
+      if (!textRuns.length) { textLayer.append(h('p', { class: 'help', style: 'padding:8px;color:var(--muted)', text: 'No selectable text on this page (it may be a scan).' })); return; }
+      for (const run of textRuns) {
+        const el = h('button', { type: 'button', class: 'textrun', style: `left:${run.u * s}px;top:${run.v * s}px;width:${run.w * s}px;height:${run.h * s}px`, title: run.text, 'aria-label': 'Edit: ' + run.text.slice(0, 40),
+          onclick: () => editRun(run) });
+        textLayer.append(el);
+      }
+    }
+    async function editRun(run) {
+      const ta = h('textarea', { class: 'inp', rows: 3, value: run.text, style: 'width:min(420px,90vw)' });
+      const res = await dialog({ title: 'Edit text', body: [h('p', { class: 'help', text: 'The original glyphs are covered and your new text is written on top. Pages with redactions are burned in for permanent removal.' }), ta],
+        actions: [{ label: 'Cancel', value: 'cancel' }, { label: 'Replace', value: 'ok', primary: true }], focus: ta, wide: true });
+      if (res !== 'ok') return;
+      const next = ta.value;
+      ed.add({ type: 'rect', label: 'Whiteout', fill: '#ffffff', fillOpacity: 1, u: run.u - 1, v: run.v - 1, w: run.w + 2, h: run.h + 2, page: ed.st.cur }, { selectIt: false });
+      const it = { type: 'text', text: next, u: run.u, v: run.v, size: Math.max(6, run.size * 0.92), family: P.family, bold: P.bold, italic: P.italic, color: P.color, page: ed.st.cur };
+      fitText(it); ed.add(it);
+      setMode('select');
+      toast('Text replaced on this page.');
+    }
 
     function addImage() {
       pickFiles('image/*', false, async fl => {
@@ -122,11 +239,11 @@ defineTool({
     function showProps() {
       const it = ed.selected();
       props.replaceChildren();
-      const kind = it ? (it.type === 'rect' ? it.label.toLowerCase() : it.type) : mode;
+      const kind = it ? (it.redact ? 'redact' : it.type === 'rect' ? it.label.toLowerCase() : it.type) : mode;
       const upd = (key, v, pref) => { if (pref) { P[pref] = v; ctx.save(); } if (it) { it[key] = v; if (it.type === 'text') fitText(it); ed.refresh(); } ed.setDrawStyle({ color: P.ink, width: P.inkW }); };
-      const title = it ? `Selected ${it.label ? it.label.toLowerCase() : it.type}` : ({ select: 'Select', text: 'Text', whiteout: 'Whiteout', highlight: 'Highlight', box: 'Box', draw: 'Draw' }[mode] || '');
+      const title = it ? `Selected ${it.label ? it.label.toLowerCase() : it.type}` : ({ select: 'Select', text: 'Text', textedit: 'Edit text', redact: 'Redact', whiteout: 'Whiteout', highlight: 'Highlight', box: 'Box', draw: 'Draw' }[mode] || '');
       props.append(h('h4', { text: title }));
-      const tips = { select: 'Click an item to change it. Drag to move, use the round handle to resize, Delete to remove.', text: 'Click on the page where the text should start.', whiteout: 'Drag over anything you want to hide.', highlight: 'Drag over text to highlight it.', box: 'Drag to draw a box.', draw: 'Draw freehand on the page.' };
+      const tips = { select: 'Click an item to change it. Drag to move, use the round handle to resize, Delete to remove.', text: 'Click on the page where the text should start.', textedit: 'Click a highlighted text run on the page to replace it.', redact: 'Drag a black box over content that must be permanently removed.', whiteout: 'Drag over anything you want to hide (recoverable unless you also Redact).', highlight: 'Drag over text to highlight it.', box: 'Drag to draw a box.', draw: 'Draw freehand on the page.' };
       if (!it) props.append(h('p', { class: 'help', style: 'color:var(--muted);margin:0 0 12px', text: tips[mode] || '' }));
       if (kind === 'text') {
         const src = it || P;
@@ -137,6 +254,7 @@ defineTool({
             checkbox('Bold', src.bold, v => upd('bold', v, 'bold')), checkbox('Italic', src.italic, v => upd('italic', v, 'italic'))),
           field('Colour', swatches(src.color, c => upd('color', c, 'color'))));
       }
+      if (kind === 'redact') props.append(field('Redaction colour', swatches(it ? it.fill : P.redact, c => upd('fill', c, 'redact'), ['#000000', '#111111', '#1a1a1a'])));
       if (kind === 'whiteout') props.append(field('Fill colour', swatches(it ? it.fill : P.white, c => upd('fill', c, 'white'), ['#ffffff', '#f5f1e6', '#eeeeee', '#000000']), 'Match the paper colour if it isn’t white.'));
       if (kind === 'highlight') props.append(field('Colour', swatches(it ? it.fill : P.hl, c => upd('fill', c, 'hl'), ['#ffe14d', '#8ff0a4', '#ffa3c7', '#8fd3ff'])));
       if (kind === 'box') props.append(field('Line colour', swatches(it ? it.stroke : P.stroke, c => upd('stroke', c, 'stroke'))),
@@ -151,14 +269,15 @@ defineTool({
     function validate() {
       const n = ed.items.length;
       if (!n) return ctx.setRunnable(false, 'Pick a tool on the right and click or drag on the page.');
-      ctx.setRunnable(true); ctx.setStatus(`${plural(n, 'change')} on ${plural(new Set(ed.items.map(x => x.page)).size, 'page')}`);
+      const redacts = ed.items.filter(x => x.redact).length;
+      ctx.setRunnable(true); ctx.setStatus(`${plural(n, 'change')}${redacts ? ` · ${plural(redacts, 'redaction')}` : ''} on ${plural(new Set(ed.items.map(x => x.page)).size, 'page')}`);
     }
     setMode('select'); validate(); ed.st.show(0);
     ctx.onRun = async progress => {
-      const doc = await libDoc(f);
-      await ed.apply(doc, progress);
+      const hasRedact = ed.items.some(x => x.redact);
+      const doc = hasRedact ? await ed.applyBurning(f, progress) : await (async () => { const d = await libDoc(f); await ed.apply(d, progress); return d; })();
       const o = await pdfOutput(doc, ctx.outName);
-      return { outputs: [o], summary: 'Changes saved', detail: `${o.name} · ${fmtBytes(o.data.length)}` };
+      return { outputs: [o], summary: hasRedact ? 'Edited with redactions burned in' : 'Changes saved', detail: `${o.name} · ${fmtBytes(o.data.length)}` };
     };
   },
 });

@@ -14,7 +14,12 @@ const gzb64 = buf => zlib.gzipSync(buf, { level: 9 }).toString('base64');
 // 1. vendor bundles (pdf.js, pdf-lib, fflate) and the pdf.js worker
 fs.mkdirSync(r('vendor-build'), { recursive: true });
 const esb = r('node_modules/.bin/esbuild');
-execFileSync(esb, [r('src/vendor-entry.js'), '--bundle', '--minify', '--format=iife', '--target=es2022', '--log-level=error', '--outfile=' + r('vendor-build/vendor.min.js')]);
+execFileSync(esb, [
+  r('src/vendor-entry.js'),
+  '--bundle', '--minify', '--format=iife', '--target=es2022', '--log-level=error',
+  '--alias:pdf-lib=@cantoo/pdf-lib',
+  '--outfile=' + r('vendor-build/vendor.min.js'),
+]);
 execFileSync(esb, [nm('pdfjs-dist/build/pdf.worker.mjs'), '--minify', '--format=iife', '--target=es2022', '--log-level=error', '--outfile=' + r('vendor-build/worker.min.js')]);
 const vendor = fs.readFileSync(r('vendor-build/vendor.min.js'));
 const worker = fs.readFileSync(r('vendor-build/worker.min.js'));

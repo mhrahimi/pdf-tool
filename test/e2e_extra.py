@@ -77,4 +77,6 @@ with sync_playwright() as p:
 
     ok('no page errors', not [e for e in errs if 'PAGEERROR' in e], [e for e in errs if 'PAGEERROR' in e][:3])
     b.close()
-print(summary())
+msg, fails = summary()
+print(msg)
+sys.exit(1 if fails else 0)

@@ -273,3 +273,4 @@ with sync_playwright() as p:
 
 fails = [r for r in RESULTS if not r[1]]
 print(f'\n{len(RESULTS) - len(fails)}/{len(RESULTS)} passed')
+sys.exit(1 if fails else 0)

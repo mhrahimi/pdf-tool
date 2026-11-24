@@ -127,6 +127,33 @@ function objectEditor(ctx, f, { onSelect, onChange } = {}) {
   let onModeReset = null;
   ed.onModeReset = fn => { onModeReset = fn; };
 
+  async function paintItemOnCanvas(c, it, scale) {
+    if (it.type === 'rect' || it.redact) {
+      c.save();
+      if (it.blend) c.globalCompositeOperation = 'multiply';
+      c.globalAlpha = it.fillOpacity ?? 1;
+      c.fillStyle = it.fill || '#000000';
+      c.fillRect(it.u * scale, it.v * scale, it.w * scale, it.h * scale);
+      if (it.stroke) { c.globalAlpha = 1; c.strokeStyle = it.stroke; c.lineWidth = (it.sw || 1) * scale; c.strokeRect(it.u * scale, it.v * scale, it.w * scale, it.h * scale); }
+      c.restore();
+    } else if (it.type === 'text') {
+      c.font = `${it.italic ? 'italic ' : ''}${it.bold ? '700 ' : ''}${it.size * scale}px ${FONT_CSS[it.family] || FONT_CSS.Helvetica}`;
+      c.fillStyle = it.color || '#111';
+      c.textBaseline = 'top';
+      String(it.text).split('\n').forEach((line, li) => c.fillText(line, it.u * scale, it.v * scale + li * it.size * 1.2 * scale));
+    } else if (it.type === 'image' && it.url) {
+      const im = await new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = it.url; });
+      c.globalAlpha = it.opacity ?? 1;
+      c.drawImage(im, it.u * scale, it.v * scale, it.w * scale, it.h * scale);
+      c.globalAlpha = 1;
+    } else if (it.type === 'ink' && it.points) {
+      c.strokeStyle = it.color; c.lineWidth = it.width * scale; c.lineCap = 'round'; c.lineJoin = 'round';
+      c.beginPath();
+      it.points.forEach((p, idx) => idx ? c.lineTo(p[0] * scale, p[1] * scale) : c.moveTo(p[0] * scale, p[1] * scale));
+      c.stroke();
+    }
+  }
+
   ed.apply = async (doc, progress) => {
     const imgCache = new Map();
     for (let k = 0; k < items.length; k++) {
@@ -152,7 +179,79 @@ function objectEditor(ctx, f, { onSelect, onChange } = {}) {
       }
     }
   };
+
+  /** Build a new PDF, burning pages that contain redactions into images so content is gone. */
+  ed.applyBurning = async (file, progress, { dpi = 150 } = {}) => {
+    const burn = new Set(items.filter(x => x.redact).map(x => x.page));
+    if (!burn.size) {
+      const doc = await libDoc(file);
+      await ed.apply(doc, progress);
+      return doc;
+    }
+    const src = await libDoc(file);
+    const out = await PDFDocument.create();
+    for (let i = 0; i < file.pages; i++) {
+      if (progress) progress(i / file.pages, burn.has(i) ? `Redacting page ${i + 1}…` : `Copying page ${i + 1}…`);
+      if (!burn.has(i)) {
+        const pageItems = items.filter(x => x.page === i);
+        if (pageItems.length) {
+          // Apply overlays on a one-page temp doc then copy — simpler: copy then apply via shared helper on out
+        }
+        const [copied] = await out.copyPages(src, [i]);
+        out.addPage(copied);
+        const page = out.getPage(out.getPageCount() - 1);
+        const g = pageGeom(page);
+        for (const it of items.filter(x => x.page === i)) {
+          if (it.type === 'image') {
+            const img = await out.embedPng(it.bytes);
+            const [x, y] = g.toUser(it.u, it.v + it.h);
+            page.drawImage(img, { x, y, width: it.w, height: it.h, rotate: degrees(g.r), opacity: it.opacity ?? 1 });
+          } else if (it.type === 'rect') {
+            const [x, y] = g.toUser(it.u, it.v + it.h);
+            page.drawRectangle({ x, y, width: it.w, height: it.h, rotate: degrees(g.r),
+              color: it.fill ? hexToRgb(it.fill) : undefined, opacity: it.fill ? (it.fillOpacity ?? 1) : undefined,
+              borderColor: it.stroke ? hexToRgb(it.stroke) : undefined, borderWidth: it.stroke ? it.sw : 0, blendMode: it.blend ? PDFLib.BlendMode.Multiply : undefined });
+          } else if (it.type === 'text') {
+            await drawTextVisual(out, page, it.text, { u: it.u, v: it.v, size: it.size, family: it.family, bold: it.bold, italic: it.italic, color: it.color });
+          } else if (it.type === 'ink') {
+            const [x, y] = g.toUser(0, 0);
+            page.drawSvgPath(inkPath(it.points), { x, y, rotate: degrees(g.r), borderColor: hexToRgb(it.color), borderWidth: it.width, borderLineCap: PDFLib.LineCapStyle.Round });
+          }
+        }
+        continue;
+      }
+      const size = await pageSize(file, i);
+      let scale = dpi / 72;
+      if (size.w * size.h * scale * scale > 4e6) scale = Math.sqrt(4e6 / (size.w * size.h));
+      const cv = await renderPage(file, i, { scale });
+      const c = cv.getContext('2d');
+      for (const it of items.filter(x => x.page === i)) await paintItemOnCanvas(c, it, scale);
+      const bytes = await canvasToBytes(cv, 'image/jpeg', 0.88);
+      cv.width = cv.height = 0;
+      const img = await out.embedJpg(bytes);
+      out.addPage([size.w, size.h]).drawImage(img, { x: 0, y: 0, width: size.w, height: size.h });
+      await tick();
+    }
+    return out;
+  };
   return ed;
+}
+
+/** Load selectable text runs for a page (visual coords). */
+async function pageTextRuns(f, pageIndex) {
+  const page = await f.pdf.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: 1 });
+  const tc = await page.getTextContent();
+  const runs = [];
+  for (const it of tc.items) {
+    if (!it.str || !it.str.trim()) continue;
+    const tr = pdfjs.Util.transform(viewport.transform, it.transform);
+    const fontHeight = Math.hypot(tr[2], tr[3]) || 12;
+    const width = it.width || (it.str.length * fontHeight * 0.5);
+    const u = tr[4], v = viewport.height - tr[5] - fontHeight * 0.15;
+    runs.push({ text: it.str, u, v, w: Math.max(width, 4), h: Math.max(fontHeight * 1.15, 8), size: fontHeight });
+  }
+  return runs;
 }
 function inkPath(pts) {
   if (!pts.length) return '';

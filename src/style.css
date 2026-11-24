@@ -248,6 +248,16 @@ table.fonts td{border-bottom:1px solid var(--line);padding:5px 4px;vertical-alig
 .stage{position:relative;background:var(--paper);box-shadow:var(--shadow);touch-action:none;user-select:none;-webkit-user-select:none}
 .stage canvas.pagecv{display:block;width:100%;height:100%}
 .stage .layer{position:absolute;inset:0}
+.stage .textedit-layer{position:absolute;inset:0;z-index:2;pointer-events:none}
+.stage .textedit-layer .textrun{pointer-events:auto;position:absolute;border:0;padding:0;margin:0;background:rgb(18 64 224/.18);box-shadow:inset 0 0 0 1px rgb(18 64 224/.55);cursor:pointer;border-radius:2px}
+.stage .textedit-layer .textrun:hover,.stage .textedit-layer .textrun:focus{background:rgb(18 64 224/.32);outline:0}
+.stage .textedit-layer .help{pointer-events:none}
+.compare-wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.compare-pane{display:grid;gap:8px;justify-items:center}
+.compare-pane h3{margin:0;font-size:14px;font-weight:600}
+.compare-diff{position:relative;box-shadow:var(--shadow);background:var(--paper)}
+.compare-diff canvas{display:block;max-width:100%;height:auto}
+.print-sheet{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;max-width:720px}
 .cropbox{position:absolute;outline:2px solid var(--accent);cursor:move}
 .cropbox .hd{position:absolute;width:16px;height:16px;background:#fff;border:2px solid var(--accent);border-radius:3px;margin:-8px 0 0 -8px}
 .obj{position:absolute;cursor:move;outline:1px dashed transparent}
@@ -281,6 +291,8 @@ select.fieldov{appearance:auto}
 .sigs .s .x{position:absolute;top:3px;right:3px;width:22px;height:22px;border-radius:6px;border:0;background:var(--panel2);display:grid;place-items:center;cursor:pointer;padding:0;color:var(--ink)}
 .sigs .s .x svg{width:12px;height:12px}
 .toolgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px}
+.toolgrid.wide{grid-template-columns:repeat(3,1fr)}
+@media (min-width:900px){.toolgrid.wide{grid-template-columns:repeat(3,1fr)}}
 .toolgrid button{display:grid;justify-items:center;gap:3px;padding:9px 4px;border:1px solid var(--line);border-radius:9px;background:var(--panel);cursor:pointer;font-size:12.5px}
 .toolgrid button[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:600}
 

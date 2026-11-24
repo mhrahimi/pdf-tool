@@ -56,7 +56,7 @@ function fileChip(d, onclick) {
 function renderHome(view) {
   const wrap = h('div', { class: 'home' });
   wrap.append(h('h1', { text: 'Everything you need to do with a PDF, right here.' }),
-    h('p', { class: 'lede', text: 'Read, merge, split, compress, convert, sign, watermark, crop, edit and fill forms. The PDF Tool runs entirely in your browser — your files never leave this device.' }));
+    h('p', { class: 'lede', text: 'Read, merge, split, compress, convert, sign, protect, redact, compare, print and fill forms. The PDF Tool runs entirely in your browser — your files never leave this device.' }));
   wrap.append(dropZone({
     title: 'Drop PDFs or images here', sub: 'PDFs open in the viewer · images go to Image → PDF',
     onfiles: async files => {
@@ -191,7 +191,17 @@ async function presentResult(ctx, res, ms) {
   const total = outs.reduce((s, o) => s + o.data.length, 0);
   let doc = null;
   if (outs.length === 1 && outs[0].pdf && res.keep !== false) {
-    doc = await addBytes(outs[0].data, outs[0].name, 'application/pdf', { select: false, derivedFrom: ctx.file && ctx.file.id });
+    try {
+      doc = await addBytes(outs[0].data, outs[0].name, 'application/pdf', {
+        select: false,
+        derivedFrom: ctx.file && ctx.file.id,
+        password: res.password || outs[0].password,
+      });
+    } catch (e) {
+      // User skipped an encrypted result, or load failed — still offer Download.
+      if (!(e && (e.name === 'AbortException' || /Worker was destroyed|Loading aborted/i.test(e.message || '')))) console.error(e);
+      doc = null;
+    }
   }
   const acts = h('div', { class: 'acts' });
   if (!outs.length) { /* nothing to download */ } else if (outs.length === 1) {

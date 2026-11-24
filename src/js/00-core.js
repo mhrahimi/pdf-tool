@@ -80,6 +80,15 @@ const ICONS = {
   hash: '<path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/>',
   pen: '<path d="M14.5 3.5l5 5L10 18l-5 1 1-5z"/>',
   dots: '<path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/>',
+  moon: '<path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  protect: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/><path d="M12 14v3"/>',
+  print: '<path d="M6 9V3h12v6"/><path d="M6 17H4a1 1 0 0 1-1-1v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1h-2"/><rect x="6" y="13" width="12" height="8" rx="1"/>',
+  compare: '<rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="4" width="8" height="16" rx="1"/><path d="M11 12h2"/>',
+  export: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/>',
+  design: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h4v3H7zM13 8h4M13 12h4M7 15h10"/>',
+  redact: '<rect x="3" y="6" width="18" height="12" rx="1"/><path d="M6 12h12" stroke-width="3"/>',
+  textedit: '<path d="M5 7V5h14v2M12 5v14M9 19h6"/><path d="M16 14l3 3-3 3"/>',
 };
 function icon(name, cls = 'i') {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -252,11 +261,14 @@ async function askPassword(name, wrong) {
 
 async function openPdfjs(bytes, name, password) {
   let pw = password;
+  // Always copy into a plain Uint8Array. Buffer.slice() (and some views) share the
+  // underlying ArrayBuffer; pdf.js may transfer/detach it and empty the caller's copy.
+  const data = bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes || []);
   const task = pdfjs.getDocument({
-    data: bytes.slice(), password: pw || undefined,
+    data, password: pw || undefined,
     BinaryDataFactory: EmbeddedDataFactory, useWorkerFetch: false,
     cMapUrl: 'cmaps/', cMapPacked: true, standardFontDataUrl: 'fonts/', wasmUrl: 'wasm/',
-    isEvalSupported: false, enableXfa: false,
+    isEvalSupported: false, enableXfa: true,
   });
   task.onPassword = async (update, reason) => {
     pw = await askPassword(name, reason === pdfjs.PasswordResponses.INCORRECT_PASSWORD);
@@ -283,14 +295,14 @@ async function addFiles(fileList, { select = true } = {}) {
   emit();
   return added;
 }
-async function addBytes(bytes, name, mime, { select = true, derivedFrom } = {}) {
+async function addBytes(bytes, name, mime, { select = true, derivedFrom, password: knownPw } = {}) {
   const kind = sniff(bytes, name, mime);
   if (!kind) throw new Error('Not a PDF or image file.');
   const d = { id: uid(), name: name || (kind === 'pdf' ? 'document.pdf' : 'image'), size: bytes.length, kind, bytes, thumbs: new Map(), derivedFrom };
   if (kind === 'pdf') {
-    const { doc, password } = await openPdfjs(bytes, d.name);
-    d.pdf = doc; d.pages = doc.numPages; d.password = password || '';
-    d.encrypted = !!password;
+    const { doc, password } = await openPdfjs(bytes, d.name, knownPw);
+    d.pdf = doc; d.pages = doc.numPages; d.password = password || knownPw || '';
+    d.encrypted = !!(password || knownPw);
     d.sizes = [];
   } else {
     d.mime = imageMime(bytes, mime);
@@ -654,6 +666,13 @@ async function canvasToBytes(cv, type = 'image/jpeg', q = 0.85) {
   const blob = await new Promise(r => cv.toBlob(r, type, q));
   return new Uint8Array(await blob.arrayBuffer());
 }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function dataUrlToBytes(u) {
+  const b = atob(u.split(',')[1]);
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
 // Embed a library image into pdfDoc, re-encoding only when needed (rotation, EXIF, formats PDF can't hold).
 async function embedImageFile(pdfDoc, d, { rotate = 0, recompress = false, quality = 0.82 } = {}) {
   const exif = d.mime === 'image/jpeg' ? jpegOrientation(d.bytes) : 1;
@@ -695,5 +714,6 @@ function addImagePage(pdfDoc, img, { size = 'fit', orient = 'auto', margin = 0, 
 // ---------- produce results ----------
 async function pdfOutput(pdfDoc, name, opts = {}) {
   const bytes = await pdfDoc.save({ useObjectStreams: true, ...opts });
-  return { name: safeName(name, 'pdf'), data: bytes, pdf: true };
+  // Plain copy so shared Buffer/ArrayBuffer views aren't detached by pdf.js later.
+  return { name: safeName(name, 'pdf'), data: new Uint8Array(bytes), pdf: true };
 }

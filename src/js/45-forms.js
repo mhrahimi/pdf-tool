@@ -19,10 +19,34 @@ defineTool({
       if (ctx.dead) return;
       loading.remove();
       const fillable = entries.filter(e => e.type !== 'other');
+      const sigOnly = entries.filter(e => e.kind === 'signature');
+      let isXfa = !!(f.pdf && f.pdf.isPureXfa);
+      if (!fillable.length && !isXfa) {
+        try { const meta = await f.pdf.getMetadata(); isXfa = !!(meta.info && meta.info.IsXFAPresent); } catch (e) { /* ok */ }
+      }
+      if (!fillable.length && isXfa) {
+        // XFA: fill via pdf.js annotation storage, then saveDocument
+        const st = pageStage(ctx, f, { annotationMode: pdfjs.AnnotationMode.ENABLE_FORMS });
+        ctx.work.append(st.el,
+          h('p', { class: 'note', style: 'max-width:720px', text: 'This is an XFA form. Fill the fields on the page (pdf.js rendering), then save. Appearance depends on the form’s own scripts.' }));
+        ctx.side.append(h('h4', { text: 'XFA form' }), h('p', { class: 'help', text: 'Type into the fields shown on the page. Complex XFA scripts may not all run in the browser.' }));
+        ctx.setRunnable(true); ctx.setStatus('XFA form');
+        st.show(0);
+        ctx.onRun = async progress => {
+          progress(0.5, 'Saving XFA form…');
+          const data = await f.pdf.saveDocument();
+          const o = { name: safeName(ctx.outName, 'pdf'), data: new Uint8Array(data), pdf: true };
+          return { outputs: [o], summary: 'XFA form saved', detail: `${o.name} · ${fmtBytes(o.data.length)}` };
+        };
+        return;
+      }
       if (!fillable.length) {
-        ctx.work.append(h('div', { class: 'pick' }, h('div', { class: 'drop' }, icon('form', 'i big'), h('strong', { text: 'This PDF has no fillable fields' }),
-          h('p', { text: 'You can still type on it: use Edit to add text anywhere, or Sign to add a signature.' }),
-          h('div', { class: 'row', style: 'justify-content:center' }, btn('Type on it with Edit', () => go('edit'), { cls: 'primary', ic: 'edit' }), btn('Sign it', () => go('sign'), { ic: 'sign' })))));
+        ctx.work.append(h('div', { class: 'pick' }, h('div', { class: 'drop' }, icon('form', 'i big'), h('strong', { text: sigOnly.length ? 'Only signature fields found' : 'This PDF has no fillable fields' }),
+          h('p', { text: sigOnly.length ? 'Use Sign to place a visible stamp on those fields, and optionally seal with a .p12 certificate.' : 'You can still type on it: use Edit to add text anywhere, or Sign to add a signature. Or use Create form to add fields.' }),
+          h('div', { class: 'row', style: 'justify-content:center' },
+            sigOnly.length ? btn('Open Sign', () => go('sign'), { cls: 'primary', ic: 'sign' }) : btn('Type on it with Edit', () => go('edit'), { cls: 'primary', ic: 'edit' }),
+            btn('Create form fields', () => go('formdesign'), { ic: 'design' }),
+            sigOnly.length ? null : btn('Sign it', () => go('sign'), { ic: 'sign' })))));
         ctx.sec.classList.add('noside'); ctx.showRun(false);
         return;
       }
@@ -110,8 +134,10 @@ defineTool({
         if (e.type === 'check') list.append(h('div', { class: 'row', style: 'margin-bottom:8px;flex-wrap:nowrap' }, h('label', { class: 'check', style: 'margin:0;flex:1' }, c, h('span', { text: e.label })), jump));
         else list.append(h('div', { class: 'field', style: 'margin-bottom:10px' }, h('div', { class: 'row', style: 'justify-content:space-between;flex-wrap:nowrap' }, h('label', { for: c.id, text: e.label, style: 'font-size:13px;font-weight:600' }), jump), c));
       });
-      const sigs = entries.filter(e => e.type === 'other' && e.kind === 'signature').length;
-      if (sigs) list.append(h('p', { class: 'note', text: `${plural(sigs, 'signature field')} — use Sign to place a visible signature there.` }));
+      const sigs = entries.filter(e => e.type === 'other' && e.kind === 'signature');
+      if (sigs.length) list.append(
+        h('p', { class: 'note', text: `${plural(sigs.length, 'signature field')} found.` }),
+        btn('Open Sign for signature fields', () => go('sign'), { cls: 'sm', ic: 'sign', style: 'margin-bottom:12px' }));
       counts();
       st.show(fillable[0].firstPage);
 

@@ -4,7 +4,9 @@ RESULTS = []
 def ok(name, cond, info=''):
     RESULTS.append((name, bool(cond))); print(('PASS ' if cond else 'FAIL ') + name + (' — ' + str(info) if info else ''), flush=True)
 def summary():
-    return f"{sum(1 for r in RESULTS if r[1])}/{len(RESULTS)} passed"
+    fails = sum(1 for r in RESULTS if not r[1])
+    msg = f"{len(RESULTS) - fails}/{len(RESULTS)} passed"
+    return msg, fails
 def tool(page, tid):
     page.evaluate(f"location.hash = '{tid}'"); page.wait_for_selector('#tool-title', timeout=10000); time.sleep(0.4)
 def run_and_download(page, name, timeout=60000):

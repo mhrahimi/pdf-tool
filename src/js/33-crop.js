@@ -64,7 +64,7 @@ async function detectContent(f, i) {
 defineTool({
   id: 'crop', name: 'Crop', icon: 'crop', group: 'organize', verb: 'crop', runLabel: 'Crop', runIcon: 'crop',
   desc: 'Trim page margins by dragging a box, typing exact sizes, or detecting content automatically.',
-  defaults: { unit: 'mm', apply: 'all', pad: 6 },
+  defaults: { unit: 'mm', apply: 'all', pad: 6, hard: false, hardDpi: 150 },
   outName: f => baseName(f.name) + '-cropped.pdf',
   mount(ctx) {
     const f = ctx.file, P = ctx.prefs;
@@ -87,6 +87,12 @@ defineTool({
     }
     const rf = rangeField({ label: '', value: P.range || '', total: f.pages, placeholder: 'e.g. 2-10', help: '', emptyIsAll: false, onchange: () => { P.range = rf.value; ctx.save(); validate(); } });
     const sizeInfo = h('div', { class: 'help', style: 'margin-bottom:14px' });
+    const hardDpiWrap = h('div');
+    hardDpiWrap.append(field('Hard crop resolution', seg([[110, '110 dpi'], [150, '150 dpi'], [200, '200 dpi']], P.hardDpi || 150, v => { P.hardDpi = v; ctx.save(); }, 'Resolution')));
+    hardDpiWrap.hidden = !P.hard;
+    const note = h('p', { class: 'note', text: '' });
+    const syncNote = () => { note.textContent = P.hard ? 'Hard crop permanently discards content outside the box by re-rendering each page as an image.' : 'Soft crop only changes page boxes. Turn on Hard crop if the trimmed area must be gone.'; };
+    syncNote();
     ctx.side.append(
       h('h4', { text: 'Margins to remove' }),
       field('Units', seg([['mm', 'mm'], ['in', 'inches'], ['pt', 'points']], P.unit, v => { P.unit = v; ctx.save(); place(false); }, 'Units')),
@@ -100,7 +106,12 @@ defineTool({
         { v: 'current', title: 'This page only' },
         { v: 'range', title: 'Some pages', extra: rf.el },
       ], P.apply, v => { P.apply = v; ctx.save(); validate(); }),
-      h('p', { class: 'note', text: 'Cropping hides the area outside the box in every PDF reader. The hidden content stays in the file — use Compress → Flatten if it must be removed.' }));
+      h('h4', { text: 'Content' }),
+      choices('hard', [
+        { v: false, title: 'Viewer crop (default)', sub: 'Hides margins. Hidden content stays in the file.' },
+        { v: true, title: 'Hard crop — remove outside content', sub: 'Re-renders each page as an image of only the crop box. Text is no longer selectable.' },
+      ], !!P.hard, v => { P.hard = !!v; ctx.save(); hardDpiWrap.hidden = !P.hard; syncNote(); validate(); }),
+      hardDpiWrap, note);
 
     function place(syncInputs = true) {
       const s = st.scale, W = st.size.w, H = st.size.h;
@@ -152,10 +163,44 @@ defineTool({
     st.show(0);
 
     ctx.onRun = async progress => {
-      const doc = await libDoc(f), n = doc.getPageCount();
-      const targets = P.apply === 'all' ? [...Array(n).keys()] : P.apply === 'current' ? [st.cur] : parseRanges(rf.value, n).pages;
+      const n = f.pages;
+      const targets = new Set(P.apply === 'all' ? [...Array(n).keys()] : P.apply === 'current' ? [st.cur] : parseRanges(rf.value, n).pages);
+      if (P.hard) {
+        const out = await PDFDocument.create();
+        const srcDoc = await libDoc(f);
+        let done = 0, skipped = 0;
+        for (let i = 0; i < n; i++) {
+          progress(0.05 + 0.85 * i / n, `Hard-cropping page ${i + 1} of ${n}…`);
+          const size = await pageSize(f, i);
+          if (!targets.has(i) || (size.w - m.left - m.right) < 2 || (size.h - m.top - m.bottom) < 2) {
+            if (targets.has(i)) skipped++;
+            const [copied] = await out.copyPages(srcDoc, [i]);
+            out.addPage(copied);
+            continue;
+          }
+          const cw = size.w - m.left - m.right, ch = size.h - m.top - m.bottom;
+          let scale = (P.hardDpi || 150) / 72;
+          if (cw * ch * scale * scale > 4e6) scale = Math.sqrt(4e6 / (cw * ch));
+          const full = await renderPage(f, i, { scale });
+          const sx = Math.round(m.left * scale), sy = Math.round(m.top * scale);
+          const sw = Math.max(1, Math.round(cw * scale)), sh = Math.max(1, Math.round(ch * scale));
+          const cv = document.createElement('canvas'); cv.width = sw; cv.height = sh;
+          cv.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+          full.width = full.height = 0;
+          const bytes = await canvasToBytes(cv, 'image/jpeg', 0.85);
+          cv.width = cv.height = 0;
+          const img = await out.embedJpg(bytes);
+          out.addPage([cw, ch]).drawImage(img, { x: 0, y: 0, width: cw, height: ch });
+          done++;
+          await tick();
+        }
+        progress(0.95, 'Saving…');
+        const o = await pdfOutput(out, ctx.outName);
+        return { outputs: [o], summary: `Hard-cropped ${plural(done, 'page')}`, detail: (skipped ? `${skipped} pages skipped · ` : '') + `${o.name} · ${fmtBytes(o.data.length)}` };
+      }
+      const doc = await libDoc(f);
       let skipped = 0;
-      for (const i of new Set(targets)) {
+      for (const i of targets) {
         const page = doc.getPage(i);
         const b = marginsToBox(page, m);
         if (b.width < 2 || b.height < 2) { skipped++; continue; }
@@ -165,7 +210,7 @@ defineTool({
       }
       progress(0.9, 'Saving…');
       const o = await pdfOutput(doc, ctx.outName);
-      const done = new Set(targets).size - skipped;
+      const done = targets.size - skipped;
       return { outputs: [o], summary: `Cropped ${plural(done, 'page')}`, detail: (skipped ? `${skipped} smaller pages were left as they were · ` : '') + `${o.name} · ${fmtBytes(o.data.length)}` };
     };
   },

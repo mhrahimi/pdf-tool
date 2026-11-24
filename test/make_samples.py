@@ -222,7 +222,28 @@ def big_images():
             pass
 
 
+def signing_cert():
+    """Self-signed PKCS#12 for digital-sign e2e (password: testpass)."""
+    key = P("_test.key")
+    crt = P("_test.crt")
+    p12 = P("signer.p12")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key, "-out", crt,
+         "-days", "365", "-nodes", "-subj", "/CN=Folio Test Signer/O=Test/C=US"],
+        check=True, capture_output=True)
+    subprocess.run(
+        ["openssl", "pkcs12", "-export", "-out", p12, "-inkey", key, "-in", crt,
+         "-passout", "pass:testpass", "-name", "Folio Test"],
+        check=True, capture_output=True)
+    for tmp in (key, crt):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 report(); encodings(); form(); photos(); scan_like(); big_pages(); big_images()
 subprocess.run(["qpdf", "--encrypt", "secret", "owner-pw", "256", "--", P("report.pdf"), P("locked.pdf")], check=True)
 subprocess.run(["qpdf", "--encrypt", "", "owner-only", "128", "--use-aes=y", "--", P("form.pdf"), P("owner-locked.pdf")], check=True)
+signing_cert()
 print("\n".join(sorted(os.listdir(OUT))))
