@@ -1,0 +1,49 @@
+# Source is what gets pushed. GitHub Pages runs `npm ci` and `npm run build`.
+
+# Dependencies
+node_modules/
+
+# Build output (`npm run build`)
+dist/
+vendor-build/
+
+# Python tests: virtualenv, bytecode, generated fixtures and results.
+# Recreate fixtures with: python3 test/make_samples.py test/samples
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+test/samples/
+test/out/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS, editors, and logs
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+*~
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+coverage/
+.nyc_output/
+*.tgz
